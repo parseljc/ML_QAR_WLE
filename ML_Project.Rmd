@@ -1,0 +1,186 @@
+---
+title: "Machine Learning Final Project"
+author: "Joshua Parsell"
+date: "March 3, 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,out.width = "200%",fig.asp = .67)
+
+```
+
+
+# Introduction
+
+The dataset provided at http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har contains a large amount of orientation and acceleration data from four different sensors used to track subjects' movements during a specific exercise.  Under controlled guidance of an expert, the subjects performed the same exercise correctly (Classe A) and with four common types of mistakes (Classe B, C, D, and E).  The goal of the project is to use the sensor data to build a model that can predict how the exercise was performed.
+
+
+## Download Data 
+
+The data for this project come from this source: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment. 
+
+```{r, echo=FALSE}
+
+setwd("C:/Users/joshu/OneDrive/Documents/Coursera/DataScience/MachineLearning/ML_QAR_WLE")
+
+if (1==0){  # This is to keep from downloading the data every time.  set 1==1 if you want it to download again.
+#The training data for this project are available here: 
+
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "pml-training.csv")
+
+#The test data are available here:
+
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "pml-testing.csv")
+}
+
+
+```
+
+
+## Load and Clean Data 
+
+First load the data which has been downloaded as two CSV files.  Fix column name misspellings and coerce columns to numeric where appropriate.  If more than 90% of the column entries are NA, drop the column.
+
+Set aside 10% of the pmlTraining dataset for validation.
+
+```{r}
+library(dplyr)
+library(caret)
+
+#ml_dir <- "C:/Users/1388628240C/OneDrive - United States Air Force/Documents/Training/Coursera/MachineLearning/"
+ml_dir <- "./"
+training_filename <- "pml-training.csv"
+testing_filename  <- "pml-testing.csv"
+
+
+pmlTraining <- read.csv(paste0(ml_dir,training_filename), header = TRUE, na.strings = c("NA", ""),stringsAsFactors = TRUE)
+pmlTesting <- read.csv(paste0(ml_dir,testing_filename), header = TRUE, na.strings = c("NA", ""),stringsAsFactors = TRUE)
+
+# Fix bad spelling
+picthNames <- grep("picth",names(pmlTraining),value=TRUE)
+pitchNames <- sub("picth","pitch",picthNames)
+# replace all bad column names with good column names
+existing <- match(picthNames,names(pmlTraining))
+names(pmlTraining)[na.omit(existing)] <- pitchNames[which(!is.na(existing))]
+existing <- match(picthNames,names(pmlTesting))
+names(pmlTesting)[na.omit(existing)] <- pitchNames[which(!is.na(existing))]
+
+# Turn all columns from column 8 until second to last column into numeric columns
+dropped_cols <- 0
+for (icol in 8:length(names(pmlTraining))-1){
+  pmlTraining[,(icol-dropped_cols)] <- as.numeric(pmlTraining[,(icol-dropped_cols)])
+  pmlTesting[,(icol-dropped_cols)] <- as.numeric(pmlTesting[,(icol-dropped_cols)])
+  # Drop any column that is over 90% NA
+  if (mean(is.na(pmlTraining[,(icol-dropped_cols)])) > 0.9 ){
+    pmlTraining <- pmlTraining[,-(icol-dropped_cols)]
+    pmlTesting <- pmlTesting[,-(icol-dropped_cols)]
+    dropped_cols <- dropped_cols +1
+  }
+}
+
+
+
+
+beltNames <- grep("belt",names(pmlTraining),value = TRUE)
+forearmNames <- grep("forearm",names(pmlTraining),value = TRUE)
+armNames <- grep("arm",grep("forearm",names(pmlTraining),value = TRUE, invert = TRUE),value = TRUE)
+dumbbellNames <- grep("dumbbell",names(pmlTraining),value = TRUE)
+
+#str(pmlTraining$classe)
+set.seed(222)
+trainIndex <- createDataPartition(pmlTraining$classe,p=0.9,list=FALSE)
+pmlValidating <- pmlTraining[-trainIndex,]
+pmlTraining <- pmlTraining[trainIndex,]
+
+
+```
+
+## Make an exploratory data analysis plot
+
+We are left with about 60 columns (variables), or 55 not including the metadata.
+Do a quick pairs plot with X (row number) and a small selection of some of the numeric columns.  
+
+```{r, echo=FALSE}
+
+#str(pmlTraining)
+
+
+
+fig <- pairs(~ X+total_accel_belt+yaw_arm+pitch_dumbbell+roll_forearm, data = pmlTraining,
+              col = c("red", "blue","green","cyan","magenta")[as.numeric(pmlTraining$classe)],           # Change color
+              pch = ".", oma =c(2,2,5,10),
+              main = "X+taB+yA+pD+rF Pairs Plot")
+
+legend("right", legend = c("A","B","C","D","E"), 
+       title = "Classe",
+       fill = c("red", "blue","green","cyan","magenta"))
+
+```
+
+
+## Build a Tree Prediction Model
+
+Remove the first five columns (metadata) which should not be part of the prediction model.  
+Set up 10-fold cross-validation.
+Train the model using Bagged CART (method="treebag").
+
+
+```{r}
+
+
+#Do not include first five columns ('X', 'username', three timestamp columns)
+pmlTraining1 <- select(pmlTraining,-X,-user_name,-raw_timestamp_part_1,-raw_timestamp_part_2,-cvtd_timestamp)
+set.seed(11111)
+
+
+tr_ctrl <- trainControl(method="cv",number = 10)
+tbag_mdl <- train(classe~.,data=pmlTraining1,method="treebag", trControl=tr_ctrl)
+
+# summarize results of the model after calculating prediction error in each case
+print(tbag_mdl)
+
+```
+
+The model has a predicted out-of-sample error rate of 1-0.9951874, or 0.0048126 (0.48%).  
+
+## Predict the pmlValidating Dataset
+
+Let's get an idea for whether the accuracy on the validation set is similar to what the 10-fold cross-validation estimated.
+
+```{r}
+
+cat("\n Bagged CART Prediction Accuracy: \n")
+tbag_preds <- predict(tbag_mdl,pmlValidating)
+mean(pmlValidating$classe == tbag_preds)
+cat("\n Bagged CART  Confusion Matrix: \n")
+confusionMatrix(pmlValidating$classe,tbag_preds)
+
+```
+
+On the data held out for validation, the error was 1-0.9938776 = 0.0061224 (0.61%).  This appears to be a fairly accurate prediction model.
+
+
+## Predict the pmlTesting Dataset
+
+```{r}
+
+#  pmlTesting dataset does not have a classe variable.  
+#  there is a problem_id column which presumably makes this a blind study.  :(
+#  So no confusion matrices or accuracy numbers will be available.
+
+# need to subset the training dataset and do validation there.
+
+tbag_testpreds <- predict(tbag_mdl,pmlTesting)
+
+for (i in 1:nrow(pmlTesting)) {
+  
+  cat("\n problem_id ",pmlTesting$problem_id[i]," | Predicted classe: ", as.character(tbag_testpreds[i]))
+
+}
+
+```
+
+
+
